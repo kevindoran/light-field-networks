@@ -1,4 +1,4 @@
-name: /om2/user/sitzmann/lf
+name: light-field-networks
 channels:
   - pytorch
   - plotly

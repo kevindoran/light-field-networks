@@ -166,7 +166,6 @@ class SceneClassDataset(torch.utils.data.Dataset):
                  max_observations_per_instance=None,
                  dataset_type='train',
                  specific_observation_idcs=None,
-                 test=False,
                  test_context_idcs=None,
                  cache=None,
                  viewlist=None):
@@ -177,7 +176,6 @@ class SceneClassDataset(torch.utils.data.Dataset):
         self.img_sidelength = img_sidelength
         self.vary_context_number = vary_context_number
         self.cache = cache
-        self.test = test
         self.test_context_idcs = test_context_idcs
 
         if viewlist is not None:

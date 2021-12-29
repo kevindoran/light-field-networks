@@ -23,7 +23,6 @@ p.add('-c', '--config_filepath', required=False, is_config_file=True)
 
 p.add_argument('--logging_root', type=str, default=config.logging_root)
 p.add_argument('--data_root', type=str, required=True)
-p.add_argument('--val_root', type=str, default=None, required=False)
 p.add_argument('--network', type=str, default='relu')
 p.add_argument('--conditioning', type=str, default='hyper')
 p.add_argument('--experiment_name', type=str, default='nmr', required=False)
@@ -62,13 +61,12 @@ def multigpu_train(gpu, opt, cache):
                                                             dataset_type='train')
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                                   drop_last=True, num_workers=0)
-
-        if opt.val_root is not None:
-            val_dataset = multiclass_dataio.SceneClassDataset(num_context=1, num_trgt=opt.num_trgt,
-                                                              root_dir=opt.val_root, query_sparsity=None,
-                                                              img_sidelength=sidelength)
-            val_loader = DataLoader(val_dataset, batch_size=1, shuffle=True, drop_last=False, num_workers=0)
-            return train_loader, val_loader
+        val_dataset = multiclass_dataio.SceneClassDataset(num_context=1, num_trgt=opt.num_trgt,
+                                                          root_dir=opt.data_root, query_sparsity=None,
+                                                          img_sidelength=sidelength, 
+                                                          dataset_type='val')
+        val_loader = DataLoader(val_dataset, batch_size=1, shuffle=True, drop_last=False, num_workers=0)
+        return train_loader, val_loader
 
         return train_loader
     
