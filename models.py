@@ -193,14 +193,16 @@ class LFAutoDecoder(LightFieldModel):
 
 
 class LFEncoder(LightFieldModel):
-    def __init__(self, latent_dim, num_instances, parameterization='plucker', conditioning='low_rank'):
-        super().__init__(latent_dim, parameterization, conditioning)
+    def __init__(self, latent_dim, num_instances, parameterization='plucker', 
+            conditioning='low_rank'):
+        super().__init__(latent_dim, parameterization, 
+                conditioning=conditioning)
         self.num_instances = num_instances
         self.encoder = conv_modules.Resnet18(c_dim=latent_dim)
 
     def get_z(self, input, val=False):
         n_qry = input['query']['uv'].shape[1]
-        rgb = util.lin2img(util.flatten_first_two(input['context']['rgb']))
+        rgb = util.lin2img(util.flatten_first_two(input['post_input']['rgb']))
         z = self.encoder(rgb)
         z = z.unsqueeze(1).repeat(1, n_qry, 1)
         z *= 1e-2

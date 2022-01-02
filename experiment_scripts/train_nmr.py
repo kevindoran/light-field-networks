@@ -71,8 +71,18 @@ def multigpu_train(gpu, opt, cache):
         return train_loader
     
     num_instances = multiclass_dataio.get_num_instances(opt.data_root, 'train')
-    model = models.LFAutoDecoder(latent_dim=256, num_instances=num_instances, parameterization='plucker',
-                                 network=opt.network, conditioning=opt.conditioning).cuda()
+    orig_latent_dim = 256
+    smaller_latent_dim = 128
+    #model = models.LFAutoDecoder(
+    #       latent_dim=smaller_latent_dim, num_instances=num_instances, 
+    #       parameterization='plucker', network=opt.network, 
+    #       conditioning=opt.conditioning).cuda()
+    model = models.LFEncoder(
+            latent_dim=smaller_latent_dim, num_instances=num_instances, 
+            parameterization='plucker',
+            # The network parameter isn't present. (Not sure why).
+            # network=opt.network, 
+            conditioning=opt.conditioning).cuda()
 
     if opt.checkpoint_path is not None:
         print(f"Loading weights from {opt.checkpoint_path}...")
