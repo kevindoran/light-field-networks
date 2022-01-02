@@ -105,12 +105,12 @@ class LightFieldModel(nn.Module):
                 return self.phi(torch.cat((z_rep, x), dim=-1))
         return phi
 
-    def get_query_cam(self, input):
+    @staticmethod
+    def get_query_cam(input):
         query_dict = input['query']
         pose = util.flatten_first_two(query_dict["cam2world"])
-        intrinsics = util.flatten_first_two(query_dict["intrinsics"])
-        uv = util.flatten_first_two(query_dict["uv"].float())
-        return pose, intrinsics, uv
+        rays = util.flatten_first_two(query_dict["rays"])
+        return pose, rays
 
     def forward(self, input, val=False, compute_depth=False, timing=False):
         out_dict = {}
@@ -126,22 +126,21 @@ class LightFieldModel(nn.Module):
 
             out_dict['z'] = z
             z = z.view(b * n_qry, self.latent_dim)
+        query_pose, query_rays = self.get_query_cam(input)
 
-        query_pose, query_intrinsics, query_uv = self.get_query_cam(input)
-
+        # TODO: make into a function.
         if self.parameterization == 'plucker':
-            light_field_coords = geometry.plucker_embedding(query_pose, query_uv, query_intrinsics)
+            light_field_coords = geometry.ray_to_plucker(query_pose, query_rays)
         else:
             ray_origin = query_pose[:, :3, 3][:, None, :]
-            ray_dir = geometry.get_ray_directions(query_uv, query_pose, query_intrinsics)
-            intsec_1, intsec_2 = geometry.ray_sphere_intersect(ray_origin, ray_dir, radius=100)
+            intsec_1, intsec_2 = geometry.ray_sphere_intersect(ray_origin, query_rays, radius=100)
             intsec_1 = F.normalize(intsec_1, dim=-1)
             intsec_2 = F.normalize(intsec_2, dim=-1)
 
             light_field_coords = torch.cat((intsec_1, intsec_2), dim=-1)
             out_dict['intsec_1'] = intsec_1
             out_dict['intsec_2'] = intsec_2
-            out_dict['ray_dir'] = ray_dir
+            out_dict['ray_dir'] = query_rays
             out_dict['ray_origin'] = ray_origin
 
         light_field_coords.requires_grad_(True)

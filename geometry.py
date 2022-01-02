@@ -11,11 +11,32 @@ def get_ray_origin(cam2world):
     return cam2world[..., :3, 3]
 
 
+def ray_to_plucker(cam2world, ray_dirs):
+    '''Computes plucker coords.
+
+    Computes plucker coords from ray directions and batched cam2world matrix.
+    '''
+    cam_pos = get_ray_origin(cam2world)
+    cam_pos = cam_pos[..., None, :].expand(list(ray_dirs.shape[:-1]) + [3])
+
+    # https://www.euclideanspace.com/maths/geometry/elements/line/plucker/index.htm
+    # https://web.cs.iastate.edu/~cs577/handouts/plucker-coordinates.pdf
+    cross = torch.cross(cam_pos, ray_dirs, dim=-1)
+    plucker = torch.cat((ray_dirs, cross), dim=-1)
+    return plucker
+
+
 def plucker_embedding(cam2world, uv, intrinsics):
-    '''Computes the plucker coordinates from batched cam2world & intrinsics matrices, as well as pixel coordinates
-    cam2world: (b, 4, 4)
-    intrinsics: (b, 4, 4)
-    uv: (b, n, 2)'''
+    '''Computes plucker coords.
+
+    Computes plucker coords from batched cam2world matrix, intrinsic matrix
+    and pixel coordinates.
+
+    Args:
+        cam2world: (b, 4, 4)
+        intrinsics: (b, 4, 4)
+        uv: (b, n, 2)
+    '''
     ray_dirs = get_ray_directions(uv, cam2world=cam2world, intrinsics=intrinsics)
     cam_pos = get_ray_origin(cam2world)
     cam_pos = cam_pos[..., None, :].expand(list(uv.shape[:-1]) + [3])
@@ -25,6 +46,7 @@ def plucker_embedding(cam2world, uv, intrinsics):
     cross = torch.cross(cam_pos, ray_dirs, dim=-1)
     plucker = torch.cat((ray_dirs, cross), dim=-1)
     return plucker
+
 
 
 def closest_to_origin(plucker_coord):
@@ -118,12 +140,19 @@ def parse_intrinsics(intrinsics):
 
 
 def expand_as(x, y):
-    if len(x.shape) == len(y.shape):
-        return x
+    """Add dimensions to x so it's dimensions are not less than y's dimensions.
+    
+    Dimensions are added to the end of x. If x has more dimensions than y
+    from the beginning, nothing is done.
 
-    for i in range(len(y.shape) - len(x.shape)):
-        x = x.unsqueeze(-1)
+    Args:
+        x (tensor): tensor to unsqueeze
+        y (tensor): tensor whose dimensions are to be matched. 
 
+    Returns: a new view of x.
+    """
+    num_add_dims = max(0, len(y.shape) - len(x.shape))
+    x = x.reshape(x.shape + (1,) * num_add_dims)
     return x
 
 
@@ -139,6 +168,7 @@ def lift(x, y, z, intrinsics, homogeneous=False):
     '''
     fx, fy, cx, cy = parse_intrinsics(intrinsics)
 
+    # Do we need to manually expand? Shouldn't broadcasting work?
     x_lift = (x - expand_as(cx, x)) / expand_as(fx, x) * z
     y_lift = (y - expand_as(cy, y)) / expand_as(fy, y) * z
 
@@ -185,7 +215,7 @@ def project_point_on_line(projection_point, line_direction, point_on_line):
 
 
 def get_ray_directions(xy, cam2world, intrinsics):
-    z_cam = torch.ones(xy.shape[:-1]).to(xy.device)
+    z_cam = torch.ones(xy.shape[:-1], device = xy.device)
     pixel_points = world_from_xy_depth(xy, z_cam, intrinsics=intrinsics, cam2world=cam2world)  # (batch, num_samples, 3)
 
     cam_pos = cam2world[..., :3, 3]

@@ -2,11 +2,19 @@ import random
 import cv2
 import os
 import torch
+import torch.nn.functional as F
 import numpy as np
 from glob import glob
 import data_util
 import util
 from collections import defaultdict
+import concurrent.futures 
+import functools
+import pathlib
+import geometry
+
+
+rng = np.random.default_rng(seed=13)
 
 string2class_dict = {
 
@@ -30,10 +38,94 @@ class2string_dict = {v:k for k, v in string2class_dict.items()}
 def class_string_2_class_id(x):
     return string2class_dict[x]
 
+
+def ref_path(root_dir):
+    ref_path = pathlib.Path("02691156/fff513f407e00e85a9ced22d91ad7027")
+    full_path = root_dir / ref_path
+    if not full_path.exists():
+        raise Exception(f'Path to reference data does not exist. ({full_path})')
+    return full_path
+
+
+@functools.lru_cache(None)
+def uv(root_dir, sidelen):
+    dummy_img_path = ref_path(root_dir) / 'image' / '0000.png'
+    dummy_img = data_util.load_rgb(str(dummy_img_path))
+    orig_sidelen= dummy_img.shape[1]
+    uv = np.mgrid[0:orig_sidelen, 0:orig_sidelen].astype(np.int32).transpose(1, 2, 0)
+    uv = cv2.resize(uv, (sidelen, sidelen), interpolation=cv2.INTER_NEAREST)
+    uv = torch.from_numpy(np.flip(uv, axis=-1).copy()).long()
+    uv = uv.reshape(-1, 2).float()
+    return uv
+
+
+@functools.lru_cache(None)
+def poses(root_dir):
+    """Parse the 24 pose camera matrices.
+
+    All 24 poses are the same for all models, so just do this once."""
+    NUM_POSES = 24
+    cameras = pathlib.Path(root_dir).glob('**/cameras.npz')
+    reference = next(cameras)
+    data = np.load(reference)
+    poses = []
+    for i in range(NUM_POSES): 
+        poses.append(torch.from_numpy(data[f'world_mat_inv_{i}']).float())
+    return poses
+
+
+@functools.lru_cache(None)
+def intrinsics(root_dir, img_sidelength):
+    """Parse the camera intrinic matrix.
+
+    A single camera intrinsic matrix is used for all images."""
+    intrinsics, _, _, _ = util.parse_intrinsics(
+            os.path.join(root_dir, "intrinsics.txt"),
+            trgt_sidelength=img_sidelength)
+    return torch.Tensor(intrinsics).float()
+
+
+def world_from_xy_depth(xy, depth, cam2world, intrinsics):
+    batch_size, *_ = cam2world.shape
+
+    x_cam = xy[..., 0]
+    y_cam = xy[..., 1]
+    z_cam = depth
+
+    pixel_points_cam = lift(x_cam, y_cam, z_cam, intrinsics=intrinsics, homogeneous=True)
+    world_coords = torch.einsum('b...ij,b...kj->b...ki', cam2world, pixel_points_cam)[..., :3]
+
+    return world_coords
+
+
+@functools.lru_cache(None)
+def rays(idx, root_dir, img_sidelen):
+    xy = uv(root_dir, img_sidelen)
+    z_cam = torch.ones(xy.shape[:-1]).to(xy.device)
+    cam2world = poses(root_dir)[idx]
+    intr_mat  = intrinsics(root_dir, img_sidelen)
+    
+    fx = intr_mat[0, 0]
+    fy = intr_mat[1, 1]
+    cx = intr_mat[0, 2]
+    cy = intr_mat[1, 2]
+    x_lift = (xy[...,0] - cx) / fx
+    y_lift = (xy[...,1] - cy) / fy
+    lift = torch.stack((x_lift, y_lift, torch.ones_like(x_lift), 
+        torch.ones_like(x_lift)), dim=-1)
+
+    #world_coords = torch.einsum('b...ij,b...kj->b...ki', cam2world, lift)[..., :3]
+    world_coords = torch.matmul(lift, cam2world)[..., :3]
+    cam_pos = cam2world[:3, 3]
+    ray_dirs = world_coords - cam_pos
+    ray_dirs = F.normalize(ray_dirs, dim=-1)
+    return ray_dirs
+    
+    
 class SceneInstanceDataset():
     """This creates a dataset class for a single object instance (such as a single car)."""
 
-    def __init__(self, root_dir, instance_idx, instance_dir, uv,
+    def __init__(self, root_dir, instance_idx, instance_dir,
                  cache=None, img_sidelength=None,
                  specific_observation_idcs=None,
                  num_images=None):
@@ -42,7 +134,7 @@ class SceneInstanceDataset():
         self.instance_dir = instance_dir
         self.instance_name = os.path.basename(self.instance_dir)
         self.root_dir = root_dir
-        self.uv = uv
+        self.uv = uv(root_dir, img_sidelength)
         self.cache = cache
 
         class_string = instance_dir.split('/')[-2]  # the object class is the second last directory of the instance directory
@@ -50,21 +142,17 @@ class SceneInstanceDataset():
 
         color_dir = os.path.join(instance_dir, "image")
         pose_dir = os.path.join(instance_dir, "cameras.npz")
-
+        
         self.color_paths = sorted(data_util.glob_imgs(color_dir))
-        self.poses = [torch.from_numpy(np.load(pose_dir)["world_mat_inv_"+str(idx)]).float() for idx in range(len(self.color_paths))]
+        self.poses = poses(self.root_dir)
+        
+        self.order = np.arange(len(self.color_paths))
+        if specific_observation_idcs:
+            self.order = specific_observation_idcs
+        elif num_images:
+            self.order = rng.shuffle(self.order)[:num_images]
 
-        if specific_observation_idcs is not None:
-            self.color_paths = util.pick(self.color_paths, specific_observation_idcs)
-            self.poses = util.pick(self.poses, specific_observation_idcs)
-        elif num_images is not None:
-            random_idcs = np.random.choice(len(self.color_paths), size=num_images)
-            self.color_paths = util.pick(self.color_paths, random_idcs)
-            self.poses = util.pick(self.poses, random_idcs)
-
-        intrinsics, _, _, _ = util.parse_intrinsics(os.path.join(self.root_dir, "intrinsics.txt"),
-                                                    trgt_sidelength=self.img_sidelength)
-        self.intrinsics = torch.Tensor(intrinsics).float()
+        self.intrinsics = intrinsics(self.root_dir, self.img_sidelength)
 
     def set_img_sidelength(self, new_img_sidelength):
         """For multi-resolution training: Updates the image sidelength with whichimages are loaded."""
@@ -74,6 +162,7 @@ class SceneInstanceDataset():
         return len(self.color_paths)
 
     def __getitem__(self, idx):
+        idx = self.order[idx]
         try:
             key = f'{self.instance_idx}_{idx}'
             if (self.cache is not None) and (key in self.cache):
@@ -93,6 +182,7 @@ class SceneInstanceDataset():
             "rgb": torch.from_numpy(rgb).float(),
             "cam2world": pose,
             "uv": self.uv,
+            "rays": rays(idx, self.root_dir, self.img_sidelength),
             "intrinsics": self.intrinsics,
             "class": self.instance_class,
             "instance_name": self.instance_name
@@ -169,7 +259,7 @@ class SceneClassDataset(torch.utils.data.Dataset):
                  test_context_idcs=None,
                  cache=None,
                  viewlist=None):
-
+        self.test = dataset_type == 'test'
         self.num_context = num_context
         self.num_trgt = num_trgt
         self.query_sparsity = query_sparsity
@@ -200,15 +290,6 @@ class SceneClassDataset(torch.utils.data.Dataset):
         self.instance_dirs = all_objects
         print(f"Root dir {root_dir}, {len(self.instance_dirs)} instances")
 
-        dummy_img_path = data_util.glob_imgs(os.path.join(all_objects[0], "image"))[0]
-        dummy_img = data_util.load_rgb(dummy_img_path)
-        org_sidelength = dummy_img.shape[1]
-
-        uv = np.mgrid[0:org_sidelength, 0:org_sidelength].astype(np.int32).transpose(1, 2, 0)
-        uv = cv2.resize(uv, (img_sidelength, img_sidelength), interpolation=cv2.INTER_NEAREST)
-        uv = torch.from_numpy(np.flip(uv, axis=-1).copy()).long()
-        uv = uv.reshape(-1, 2).float()
-
         assert (len(self.instance_dirs) != 0), "No objects in the data directory"
 
         if max_num_instances is not None:
@@ -216,21 +297,32 @@ class SceneClassDataset(torch.utils.data.Dataset):
 
         random.seed(0)
         np.random.seed(0)
-        self.all_instances = []
-        for idx, dir in enumerate(self.instance_dirs):
+        self.num_instances = len(self.instance_dirs)
+        self.all_instances = [None] * self.num_instances
+        self.num_per_instance_observations = [0] * self.num_instances
+
+        instance_constructor = functools.partial(SceneInstanceDataset, 
+                root_dir=root_dir, img_sidelength=img_sidelength,
+                cache=cache, num_images=max_observations_per_instance)
+
+        def process_instance(idx_dir_pair):
+            idx, dir = idx_dir_pair
+            nonlocal viewlist
+            nonlocal specific_observation_idcs
+            nonlocal self
             viewlist_key = '/'.join(dir.split('/')[-2:])
             specific_observation_idcs = viewlist[viewlist_key] if viewlist is not None else specific_observation_idcs
-            self.all_instances.append(SceneInstanceDataset(root_dir=root_dir,
-                                                           instance_idx=idx,
-                                                           instance_dir=dir,
-                                                           specific_observation_idcs=specific_observation_idcs,
-                                                           img_sidelength=img_sidelength,
-                                                           uv=uv,
-                                                           cache=cache,
-                                                           num_images=max_observations_per_instance))
+            self.all_instances[idx] = instance_constructor(
+                    instance_idx=idx,
+                    instance_dir=dir,
+                    specific_observation_idcs=specific_observation_idcs)
+            self.num_per_instance_observations[idx] = len(self.all_instances[idx])
 
-        self.num_per_instance_observations = [len(obj) for obj in self.all_instances]
-        self.num_instances = len(self.all_instances)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = executor.map(process_instance, enumerate(self.instance_dirs))
+            #concurrent.futures.wait(futures) 
+            #for fut in futures: 
+            #    print(fut.result())
         
     def sparsify(self, dict, sparsity):
         new_dict = {}
