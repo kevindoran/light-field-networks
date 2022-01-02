@@ -33,40 +33,62 @@ class LightFieldModel(nn.Module):
             out_channels += 1
             self.background = torch.ones((1, 1, 1, 3)).cuda()
 
-        if self.fit_single or conditioning in ['hyper', 'low_rank']:
+        if conditioning in ['hyper', 'low_rank']:
             if network == 'relu':
-                self.phi = custom_layers.FCBlock(hidden_ch=self.num_hidden_units_phi, num_hidden_layers=6,
-                                                 in_features=6, out_features=out_channels, outermost_linear=True, norm='layernorm_na')
+                self.phi = custom_layers.FCBlock(
+                        hidden_ch=self.num_hidden_units_phi, 
+                        num_hidden_layers=6, in_features=6, 
+                        out_features=out_channels, outermost_linear=True, 
+                        norm='layernorm_na')
             elif network == 'siren':
                 omega_0 = 30.
-                self.phi = custom_layers.Siren(in_features=6, hidden_features=256, hidden_layers=8,
-                                               out_features=out_channels, outermost_linear=True, hidden_omega_0=omega_0,
-                                               first_omega_0=omega_0)
+                self.phi = custom_layers.Siren(
+                        in_features=6, hidden_features=256, hidden_layers=8,
+                        out_features=out_channels, outermost_linear=True, 
+                        hidden_omega_0=omega_0, first_omega_0=omega_0)
+            else:
+                raise Exception(
+                        f'Network option "{network}" is unsupported. '
+                        'Supported: ["relu", "siren"]')
         elif conditioning == 'concat':
             self.phi = nn.Sequential(
                 nn.Linear(6+self.latent_dim, self.num_hidden_units_phi),
-                custom_layers.ResnetBlockFC(size_in=self.num_hidden_units_phi, size_out=self.num_hidden_units_phi,
-                                            size_h=self.num_hidden_units_phi),
-                custom_layers.ResnetBlockFC(size_in=self.num_hidden_units_phi, size_out=self.num_hidden_units_phi,
-                                            size_h=self.num_hidden_units_phi),
-                custom_layers.ResnetBlockFC(size_in=self.num_hidden_units_phi, size_out=self.num_hidden_units_phi,
-                                            size_h=self.num_hidden_units_phi),
-                nn.Linear(self.num_hidden_units_phi, 3)
-            )
+                custom_layers.ResnetBlockFC(
+                    size_in=self.num_hidden_units_phi, 
+                    size_out=self.num_hidden_units_phi,
+                    size_h=self.num_hidden_units_phi),
+                custom_layers.ResnetBlockFC(
+                    size_in=self.num_hidden_units_phi, 
+                    size_out=self.num_hidden_units_phi,
+                    size_h=self.num_hidden_units_phi),
+                custom_layers.ResnetBlockFC(
+                    size_in=self.num_hidden_units_phi, 
+                    size_out=self.num_hidden_units_phi,
+                    size_h=self.num_hidden_units_phi),
+                nn.Linear(self.num_hidden_units_phi, 3))
+        else:
+            raise Exception(
+                    f'Conditioning option "{conditioning}" is unsupported.' 
+                    ' Supported: ["hyper", "low_rank", "concat"]')
 
         if not self.fit_single:
             if conditioning=='hyper':
-                self.hyper_phi = hyperlayers.HyperNetwork(hyper_in_features=self.latent_dim,
-                                                          hyper_hidden_layers=1,
-                                                          hyper_hidden_features=self.latent_dim,
-                                                          hypo_module=self.phi)
+                self.hyper_phi = hyperlayers.HyperNetwork(
+                        hyper_in_features=self.latent_dim,
+                        hyper_hidden_layers=1,
+                        hyper_hidden_features=self.latent_dim,
+                        hypo_module=self.phi)
             elif conditioning=='low_rank':
-                self.hyper_phi = hyperlayers.LowRankHyperNetwork(hyper_in_features=self.latent_dim,
-                                                                 hyper_hidden_layers=1,
-                                                                 hyper_hidden_features=512,
-                                                                 hypo_module=self.phi,
-                                                                 nonlinearity='leaky_relu')
-
+                self.hyper_phi = hyperlayers.LowRankHyperNetwork(
+                        hyper_in_features=self.latent_dim,
+                        hyper_hidden_layers=1,
+                        hyper_hidden_features=512,
+                        hypo_module=self.phi,
+                        nonlinearity='leaky_relu')
+            else:
+                raise Exception(
+                        f'Conditioning option "{conditioning}" is unsupported '
+                        'for single class. Supported: ["hyper", "low_rank"]')
         print(self.phi)
         print(np.sum(np.prod(param.shape) for param in self.phi.parameters()))
 
