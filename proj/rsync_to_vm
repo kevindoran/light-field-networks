@@ -1,0 +1,1 @@
+rsync -ave ssh ./ d1.asia-northeast1-a.draw-286122:~/cv

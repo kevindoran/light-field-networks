@@ -1,0 +1,10 @@
+#!/bin/bash
+#docker rm csj
+docker run -it \
+--gpus=all \
+--ipc=host \
+--name="csj-runcmd-$(date +%s)" \
+-v $(pwd):/app \
+lfni \
+$1
+
