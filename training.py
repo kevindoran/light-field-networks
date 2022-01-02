@@ -79,7 +79,6 @@ def train(model, dataloaders, epochs, lr, epochs_til_checkpoint, model_dir, loss
                            os.path.join(checkpoints_dir, 'model_epoch_%04d_iter_%06d.pth' % (epoch, total_steps)))
 
             for step, (model_input, gt) in enumerate(train_dataloader):
-
                 if device == 'gpu':
                     model_input = util.dict_to_gpu(model_input)
                     gt = util.dict_to_gpu(gt)
@@ -113,7 +112,7 @@ def train(model, dataloaders, epochs, lr, epochs_til_checkpoint, model_dir, loss
                         summary_fn(model, model_input, gt, loss_summaries, model_output, writer, total_steps, 'train_')
 
                 for optim in optimizers:
-                    optim.zero_grad()
+                    model.zero_grad(set_to_none=True)
                 train_loss.backward()
 
                 if gpus > 1:
